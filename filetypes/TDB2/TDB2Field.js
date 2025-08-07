@@ -4,6 +4,7 @@ const FIELD_TYPE_INT = 0;
 const FIELD_TYPE_STRING = 1;
 const FIELD_TYPE_UNK = 3;
 const FIELD_TYPE_SUBTABLE = 4;
+const FIELD_TYPE_SUBTABLE_COMPRESSED = 5;
 const FIELD_TYPE_FLOAT = 10;
 
 class TDB2Field {
@@ -60,6 +61,7 @@ class TDB2Field {
                 const str = this._raw.toString('utf8');
                 return str.substring(0, str.length - 1);
             case FIELD_TYPE_SUBTABLE:
+            case FIELD_TYPE_SUBTABLE_COMPRESSED:
                 return this._value;
             case FIELD_TYPE_FLOAT:
                 return this._raw.readFloatBE(0);
@@ -84,6 +86,7 @@ class TDB2Field {
                 this._raw = Buffer.from(strHexArray);
                 break;
             case FIELD_TYPE_SUBTABLE:
+            case FIELD_TYPE_SUBTABLE_COMPRESSED:
                 this._value = value;
                 break
             case FIELD_TYPE_FLOAT:
