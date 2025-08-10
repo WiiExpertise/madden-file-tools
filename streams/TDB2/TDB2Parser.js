@@ -11,6 +11,7 @@ const FIELD_TYPE_INT = 0;
 const FIELD_TYPE_STRING = 1;
 const FIELD_TYPE_UNK = 3;
 const FIELD_TYPE_SUBTABLE = 4;
+const FIELD_TYPE_SUBTABLE_COMPRESSED = 5;
 const FIELD_TYPE_FLOAT = 10;
 
 class TDB2Parser extends FileParser {
@@ -39,6 +40,18 @@ class TDB2Parser extends FileParser {
                     });
                 });
             }
+            else if(table.type === 0x3) // Table type 3 seems to be basically the same as 4, but the header has some extra bytes before the record count
+            {
+                this.bytes(0x3, (extraKeyBuf) => {
+                    table.rawKey = Buffer.concat([table.rawKey, buf, extraKeyBuf]);
+                    this.bytes(0x1, (buf2) => {
+                        this._readLebNumber(buf2, (numEntriesBuf) => {
+                            table.numEntriesRaw = numEntriesBuf;
+                            this._onTableRecordStart(table);
+                        });
+                    });
+                });
+            }
             else
             {
                 this._readLebNumber(buf, (numEntriesBuf) => {
@@ -53,6 +66,8 @@ class TDB2Parser extends FileParser {
         this.bytes(0x1, (buf) => {
             this._readLebNumber(buf, (lebBuf) => {
                 record.index = utilService.readModifiedLebCompressedInteger(lebBuf);
+
+                // Unknown 2 is the store type. 2 represents gzip compressed record data, while 3 is uncompressed
                 if(table.unknown2 === 0x2)
                 {
                     // Read LEB number for compressed byte size
@@ -83,6 +98,15 @@ class TDB2Parser extends FileParser {
     _onCompressedTableFieldStart(compressedRecordBuf, record, table, existingParser) {
         const recordParser = new SimpleParser(zlib.gunzipSync(compressedRecordBuf));
         recordParser.readBytes(4); // Skip the header bytes
+
+        // Quick and dirty check for extended record header based on table name. 
+        // Should probably come up with a better way to detect M26 extended header, but it works for now
+        if(table.name === 'BLBM' || table.name === 'BLOB')
+        {
+            // M26 has 10 extra header bytes to skip
+            recordParser.readBytes(10);
+        }
+
         this._onDecompressedTableFieldStart(recordParser, record, table);
     };
 
@@ -99,7 +123,10 @@ class TDB2Parser extends FileParser {
             case FIELD_TYPE_INT:
                 field.raw = utilService.writeModifiedLebCompressedInteger(utilService.parseModifiedLebEncodedNumber(recordParser));
                 record.fields[field.key] = field;
-                if(field.key === 'UNWI')
+
+                // M25+ weirdness. The UNWI field is sometimes (but not always) followed by an extra zero byte.
+                // It never seems to appear at the end of a record, so checking this way shouldn't cause any issues.
+                if(field.key === 'UNWI' && recordParser.buffer[recordParser.offset] === 0)
                 {
                     field.raw = Buffer.concat([field.raw, recordParser.readBytes(1)]);
                     record.fields[field.key] = field;
@@ -112,7 +139,7 @@ class TDB2Parser extends FileParser {
                 record.fields[field.key] = field;
                 return this._checkCompressedTableRecordEnd(record, table, recordParser);
             case FIELD_TYPE_UNK:
-                // M25 rosters decided to be weird, sometimes they have a 0 byte after this type byte, other times they don't.
+                // M25+ rosters decided to be weird, sometimes they have a 0 byte after this type byte, other times they don't.
                 // This field type generally never appears at the end of a record, so checking this way shouldn't cause any issues
                 field.raw = recordParser.buffer[recordParser.offset] === 0 ? recordParser.readBytes(1) : Buffer.alloc(0);
                 record.fields[field.key] = field;
@@ -254,8 +281,8 @@ class TDB2Parser extends FileParser {
                         field.raw = fieldBuffer;
                         record.fields[field.key] = field;
 
-                        // UNWI has an extra zero for some reason
-                        if(field.key === 'UNWI')
+                        // UNWI (also the TREF field in M26) has an extra zero for some reason
+                        if(field.key === 'UNWI' || field.key === 'TREF')
                         {
                             this.bytes(0x1, (buf) => {
                                 field.raw = Buffer.concat([fieldBuffer, buf]);
@@ -302,6 +329,7 @@ class TDB2Parser extends FileParser {
                        this._onTableFieldStart(record, table, excessBuf);
                     });
                 case FIELD_TYPE_SUBTABLE:
+                case FIELD_TYPE_SUBTABLE_COMPRESSED: // Most of the logic is the same for both subtable types
                     return this.bytes(0x1, (buf) => {
                         field.value = new TDB2Table();
                         field.value.offset = this.currentBufferIndex - 6;
@@ -309,14 +337,34 @@ class TDB2Parser extends FileParser {
                         field.value.name = field.key;
                         field.value.type = field.type;
                         field.value.unknown1 = tableKeyBuf.readUInt8(4);
-                        this._readLebNumber(buf, (numEntriesBuf) => {
-                            field.value.numEntriesRaw = numEntriesBuf;
-                            field.value.isSubTable = true;
-                            field.value.parentInfo = { parentRecord: record, parentField: field, parentTable: table };
-                            record.fields[field.key] = field;
-                            
-                            this._onTableRecordStart(field.value);
-                        });
+
+                        if(field.type === FIELD_TYPE_SUBTABLE_COMPRESSED) // Field type 5 will have the extra storage type byte just like table type 5
+                        {
+                            // Read the store type byte
+                            field.value.unknown2 = buf.readUInt8(0);
+
+                            this.bytes(0x1, (buf2) => {
+                                this._readLebNumber(buf2, (numEntriesBuf) => {
+                                    field.value.numEntriesRaw = numEntriesBuf;
+                                    field.value.isSubTable = true;
+                                    field.value.parentInfo = { parentRecord: record, parentField: field, parentTable: table };
+                                    record.fields[field.key] = field;
+                                    this._onTableRecordStart(field.value);
+                                });
+                            });
+
+                        }
+                        else
+                        {
+                            this._readLebNumber(buf, (numEntriesBuf) => {
+                                field.value.numEntriesRaw = numEntriesBuf;
+                                field.value.isSubTable = true;
+                                field.value.parentInfo = { parentRecord: record, parentField: field, parentTable: table };
+                                record.fields[field.key] = field;
+                                
+                                this._onTableRecordStart(field.value);
+                            });
+                        }
                     });
                 case FIELD_TYPE_FLOAT:
                     return this.bytes(0x3, (restOfFloatBuf) => {
