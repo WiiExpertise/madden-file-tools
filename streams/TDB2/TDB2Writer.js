@@ -106,21 +106,33 @@ class TDB2Writer extends Readable {
     _writeCompressedRecord(table, record) {
         const decompressedBufs = [];
 
-        // Quick and dirty check for extended record header based on table name, should probably try to come up with a better way to detect M26 extended header, but this works for now
-        if(table.name === 'BLBM' || table.name === 'BLOB')
+        // Quick and dirty check for subrecord format based on table name, should probably try to come up with a better way to detect M26, but this works for now
+        if((table.name === 'BLBM' || table.name === 'BLOB') && !record.isSubRecord)
         {
-            // This section is repeated for whatever reason
+            // Write main header and subrecord header
             decompressedBufs.push(Buffer.from(utilService.compress6BitString("CHAN")));
             decompressedBufs.push(Buffer.from([0x03]));
             decompressedBufs.push(Buffer.from(utilService.compress6BitString("CHAN")));
             decompressedBufs.push(Buffer.from([0x03]));
 
-            decompressedBufs.push(Buffer.from([0x00, 0x00]));
+            // If no subrecord, just write two null bytes, otherwise write the subrecord
+            if(record.subRecord === null)
+            {
+                decompressedBufs.push(Buffer.from([0x00, 0x00]));
+            }
+            else
+            {
+                decompressedBufs.push(Buffer.concat(this._writeCompressedRecord(table, record.subRecord)));
+            }
         }
 
-        // Write the decompressed record header
-        decompressedBufs.push(Buffer.from(utilService.compress6BitString("CHVI")));
-        decompressedBufs.push(Buffer.from([0x03]));
+        // Only the main record has this header
+        if(!record.isSubRecord)
+        {
+            // Write the CHVI header for the start of the main record
+            decompressedBufs.push(Buffer.from(utilService.compress6BitString("CHVI")));
+            decompressedBufs.push(Buffer.from([0x03]));
+        }
 
         // Write the fields in alphabetical order
         const sortedFields = Object.keys(record.fields).sort();
