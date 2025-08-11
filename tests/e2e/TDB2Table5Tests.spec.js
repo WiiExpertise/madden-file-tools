@@ -5,6 +5,7 @@ const path = require('path');
 const m24Path = path.join(__dirname, '../data/M24_ROSTER-Official');
 const m25Path = path.join(__dirname, '../data/M25_ROSTER-Official');
 const m26Path = path.join(__dirname, '../data/M26_ROSTER-Official');
+const m26SavedPath = path.join(__dirname, '../data/M26_ROSTER-Saved');
 
 it('M24 Helper test', async function() {
     this.timeout(20000);
@@ -263,4 +264,26 @@ it('M26 Removed Record Test', async function() {
         return record.index === 1345;
     })).to.equal(undefined);
 });
+
+it('M26 Saved Roster Edit Test', async function() {
+    this.timeout(20000);
+    const m26Helper = new MaddenRosterHelper();
+    await m26Helper.load(m26SavedPath);
+    const barkleyRecord = m26Helper.file.BLOB.records[0].fields['BLBM'].value.records.find((record) => {
+        return record.index === 13085;
+    })
+
+    barkleyRecord.fields['ASNM'].value = "EditedSaquon_13085";
+
+    await m26Helper.save(path.join(__dirname, "../data/WriteTest_M26_ROSTER-Saved"));
+    const m26Helper2 = new MaddenRosterHelper();
+    await m26Helper2.load(path.join(__dirname, "../data/WriteTest_M26_ROSTER-Saved"));
+
+    // Ensure the written data matches
+    expect(m26Helper2.file.BLOB.records[0].fields['BLBM'].value.records.find((record) => {
+        return record.index === 13085;
+    }).fields['ASNM'].value).to.equal("EditedSaquon_13085");
+});
+
+
 
