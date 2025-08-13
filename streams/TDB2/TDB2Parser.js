@@ -99,15 +99,35 @@ class TDB2Parser extends FileParser {
         const recordParser = new SimpleParser(zlib.gunzipSync(compressedRecordBuf));
         recordParser.readBytes(4); // Skip the header bytes
 
-        // Quick and dirty check for extended record header based on table name. 
-        // Should probably come up with a better way to detect M26 extended header, but it works for now
+        // Quick and dirty check for M26 subrecord format based on table name. 
+        // Should probably come up with a better way to detect M26, but it works for now
         if(table.name === 'BLBM' || table.name === 'BLOB')
         {
-            // M26 has 10 extra header bytes to skip
-            recordParser.readBytes(10);
-        }
+            // Subrecord header (always exists, even when there's no actual subrecord data)
+            recordParser.readBytes(4);
 
-        this._onDecompressedTableFieldStart(recordParser, record, table);
+            // Another quick and dirty check to check if we have a subrecord to read
+            if(recordParser.buffer[recordParser.offset] !== 0 && recordParser.buffer[recordParser.offset] !== 0x8E)
+            {
+                let subRecord = new TDB2Record();
+                subRecord.index = 0; // There's really no need for an index here, since every record has at most one subrecord and this isn't tied to a table
+                subRecord.parentRecord = record;
+                record.subRecord = subRecord;
+
+                this._onDecompressedTableFieldStart(recordParser, subRecord, table);
+            }
+            else
+            {
+                // When there's no subrecord, there's 2 null bytes and then the 4 byte header
+                recordParser.readBytes(2);
+                recordParser.readBytes(4);
+                this._onDecompressedTableFieldStart(recordParser, record, table);
+            }
+        }
+        else
+        {
+            this._onDecompressedTableFieldStart(recordParser, record, table);
+        }
     };
 
     _onDecompressedTableFieldStart(recordParser, record, table)
@@ -126,9 +146,11 @@ class TDB2Parser extends FileParser {
 
                 // M25+ weirdness. The UNWI field is sometimes (but not always) followed by an extra zero byte.
                 // It never seems to appear at the end of a record, so checking this way shouldn't cause any issues.
-                if(field.key === 'UNWI' && recordParser.buffer[recordParser.offset] === 0)
+                // The WRST field can appear at the end of a subrecord, but it seems to always have the eztra zero, so that's fine
+                if((field.key === 'UNWI' || field.key === 'WRST') && recordParser.buffer[recordParser.offset] === 0)
                 {
                     field.raw = Buffer.concat([field.raw, recordParser.readBytes(1)]);
+
                     record.fields[field.key] = field;
                 }
                 return this._checkCompressedTableRecordEnd(record, table, recordParser);
@@ -230,11 +252,25 @@ class TDB2Parser extends FileParser {
     _checkCompressedTableRecordEnd(record, table, recordParser)
     {
         if (recordParser.buffer.readUInt8(recordParser.offset) === 0x0) {
-            this._pushTableRecord(record, table);
+            // Subrecords work purely by a reference from the parent record, so don't push to table
+            if(!record.isSubRecord)
+            {
+                this._pushTableRecord(record, table);
+            }
 
+            // Read record terminator null byte
             recordParser.readBytes(1);
 
-            this._checkTableEnd(table);
+            // If it's the end of the subrecord, we still need to read the parent record afterward
+            if(record.isSubRecord)
+            {
+                recordParser.readBytes(4); // Read CHVI header
+                this._onDecompressedTableFieldStart(recordParser, record.parentRecord, table);
+            }
+            else
+            {
+                this._checkTableEnd(table);
+            }
         }
         else {
             this._onDecompressedTableFieldStart(recordParser, record, table);

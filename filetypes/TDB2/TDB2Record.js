@@ -5,6 +5,8 @@ class TDB2Record {
     constructor() {
         this[Symbol.toStringTag] = 'TDB2Record';
         this._fields = {};
+        this._parentRecord = null;
+        this._subRecord = null;
     };
 
     get fields() {
@@ -21,6 +23,26 @@ class TDB2Record {
 
     set index(index) {
         this._index = index;
+    };
+
+    get subRecord() {
+        return this._subRecord;
+    };
+
+    set subRecord(subRecord) {
+        this._subRecord = subRecord;
+    };
+
+    get isSubRecord() {
+        return this._parentRecord !== null;
+    };
+
+    get parentRecord() {
+        return this._parentRecord;
+    };
+
+    set parentRecord(parentRecord) {
+        this._parentRecord = parentRecord;
     };
 
     getFieldByKey(key) {
